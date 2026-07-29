@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>My Gym</title>
+<meta name="theme-color" content="#0B2A4A" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="My Gym" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<link rel="icon" href="icons/icon-192.png" />
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { overscroll-behavior-y: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/plain" id="app-source">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+/* ------------------------------------------------------------ */
+/* local storage shim — same interface as the Claude artifact    */
+/* storage API, so the app logic below is unchanged.             */
+/* ------------------------------------------------------------ */
+window.storage = {
+  async get(key) {
+    const v = localStorage.getItem(key);
+    if (v === null) { throw new Error('not found'); }
+    return { key, value: v, shared: false };
+  },
+  async set(key, value) {
+    localStorage.setItem(key, value);
+    return { key, value, shared: false };
+  },
+};
+
+/* ------------------------------------------------------------ */
+/* tiny inline icons (no external icon library needed)          */
+/* ------------------------------------------------------------ */
+function IconCheck({ size = 14, color = 'currentColor', className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <path d="M20 6L9 17l-5-5" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function IconDumbbell({ size = 18, color = '#fff' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <rect x="1" y="9" width="4" height="6" rx="1.3" fill={color} />
+      <rect x="19" y="9" width="4" height="6" rx="1.3" fill={color} />
+      <rect x="6" y="7" width="3" height="10" rx="1" fill={color} />
+      <rect x="15" y="7" width="3" height="10" rx="1" fill={color} />
+      <rect x="9" y="11" width="6" height="2" fill={color} />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------ */
+/* constants & helpers                                           */
+/* ------------------------------------------------------------ */
+
+const PALETTE = ['#2C5AA0', '#C75B29', '#2E8B57', '#7A5CB5', '#B0894F', '#3E7C8C', '#9A4F6B'];
+const REST_COLOR = '#B9B4A6';
+const PLAN_KEY = 'repcycle_plan_v1';
+const COMPLETIONS_KEY = 'repcycle_completions_v1';
+const WEEKDAY_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+const DAY_NAMES_FULL = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+];
+
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+function toISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function fromISO(s) {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function addDays(d, n) {
+  const nd = new Date(d);
+  nd.setDate(nd.getDate() + n);
+  return nd;
+}
+function formatLongDate(dateStr) {
+  const d = fromISO(dateStr);
+  return `${DAY_NAMES_FULL[d.getDay()]}, ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+}
+function cloneDeep(obj) {
+  return typeof structuredClone === 'function'
+    ? structuredClone(obj)
+    : JSON.parse(JSON.stringify(obj));
+}
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const bigint = parseInt(h, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+function dayColor(day, index) {
+  return day.exercises.length > 0 ? PALETTE[index % PALETTE.length] : REST_COLOR;
+}
+
+function defaultPlan() {
+  return {
+    startDate: toISO(new Date()),
+    restWeekdays: [],
+    cycle: [
+      {
+        id: uid(), name: 'Push', exercises: [
+          { id: uid(), name: 'Bench Press', sets: 4, reps: '8-10' },
+          { id: uid(), name: 'Overhead Press', sets: 3, reps: '8-10' },
+          { id: uid(), name: 'Tricep Pushdown', sets: 3, reps: '12-15' },
+        ],
+      },
+      {
+        id: uid(), name: 'Pull', exercises: [
+          { id: uid(), name: 'Deadlift', sets: 3, reps: '5' },
+          { id: uid(), name: 'Pull-ups', sets: 4, reps: '8-10' },
+          { id: uid(), name: 'Barbell Row', sets: 3, reps: '8-10' },
+        ],
+      },
+      {
+        id: uid(), name: 'Legs', exercises: [
+          { id: uid(), name: 'Squat', sets: 4, reps: '6-8' },
+          { id: uid(), name: 'Romanian Deadlift', sets: 3, reps: '8-10' },
+          { id: uid(), name: 'Leg Press', sets: 3, reps: '10-12' },
+        ],
+      },
+      { id: uid(), name: 'Rest', exercises: [] },
+      {
+        id: uid(), name: 'Core & Cardio', exercises: [
+          { id: uid(), name: 'Plank', sets: 3, reps: '60s' },
+          { id: uid(), name: 'Hanging Leg Raise', sets: 3, reps: '12' },
+          { id: uid(), name: 'Treadmill', sets: 1, reps: '20 min' },
+        ],
+      },
+    ],
+  };
+}
+
+function getCycleInfo(dateStr, plan) {
+  const date = fromISO(dateStr);
+  const start = fromISO(plan.startDate);
+  const wd = date.getDay();
+  if (plan.restWeekdays.includes(wd)) return { type: 'weekly-rest' };
+  if (date < start) return { type: 'before-start' };
+  const n = plan.cycle.length;
+  if (n === 0) return { type: 'empty' };
+
+  let effectiveIndex;
+  if (plan.restWeekdays.length === 0) {
+    effectiveIndex = Math.round((date - start) / 86400000);
+  } else {
+    let count = -1;
+    let cur = new Date(start);
+    while (cur <= date) {
+      if (!plan.restWeekdays.includes(cur.getDay())) count++;
+      cur = addDays(cur, 1);
+    }
+    effectiveIndex = count;
+  }
+  const idx = ((effectiveIndex % n) + n) % n;
+  return { type: 'cycle', index: idx };
+}
+
+function getDayInfo(dateStr, plan) {
+  const info = getCycleInfo(dateStr, plan);
+  if (info.type === 'cycle') {
+    const day = plan.cycle[info.index];
+    return { ...info, name: day.name, exercises: day.exercises, color: dayColor(day, info.index) };
+  }
+  if (info.type === 'empty') {
+    return { ...info, name: 'No plan yet', exercises: [], color: REST_COLOR };
+  }
+  return {
+    ...info,
+    name: info.type === 'before-start' ? '—' : 'Rest',
+    exercises: [],
+    color: REST_COLOR,
+  };
+}
+
+function computeStreak(plan, completions) {
+  let streak = 0;
+  let cur = new Date();
+  let iterations = 0;
+  let isToday = true;
+  const start = fromISO(plan.startDate);
+  while (iterations < 730) {
+    iterations++;
+    if (cur < start) break;
+    const dateStr = toISO(cur);
+    const { exercises } = getDayInfo(dateStr, plan);
+    if (exercises.length > 0) {
+      const doneMap = completions[dateStr] || {};
+      const allDone = exercises.every((e) => doneMap[e.id]);
+      if (allDone) {
+        streak++;
+      } else if (isToday) {
+        // today isn't finished yet — don't break the streak on it
+      } else {
+        break;
+      }
+    }
+    isToday = false;
+    cur = addDays(cur, -1);
+  }
+  return streak;
+}
+
+function computeWeekProgress(plan, completions) {
+  const today = new Date();
+  const weekStart = addDays(today, -today.getDay());
+  let done = 0;
+  let total = 0;
+  for (let i = 0; i <= today.getDay(); i++) {
+    const dateStr = toISO(addDays(weekStart, i));
+    const { exercises } = getDayInfo(dateStr, plan);
+    if (exercises.length > 0) {
+      total++;
+      const doneMap = completions[dateStr] || {};
+      if (exercises.every((e) => doneMap[e.id])) done++;
+    }
+  }
+  return { done, total };
+}
+
+/* ------------------------------------------------------------ */
+/* small UI atoms                                                */
+/* ------------------------------------------------------------ */
+
+function CycleRing({ cycle, activeIndex, size = 46 }) {
+  const n = Math.max(cycle.length, 1);
+  const r = size / 2 - 7;
+  const cx = size / 2;
+  const cy = size / 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.28)" strokeWidth="1.5" />
+      {cycle.map((day, i) => {
+        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        const active = i === activeIndex;
+        return (
+          <circle
+            key={day.id}
+            cx={x}
+            cy={y}
+            r={active ? 4.5 : 3}
+            fill={active ? '#FFFFFF' : 'rgba(255,255,255,0.45)'}
+            className={active ? 'rc-pulse' : ''}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+function Checkbox({ checked, onClick, color }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={checked}
+      aria-label={checked ? 'Mark as not done' : 'Mark as done'}
+      className="rc-check"
+      style={{
+        borderColor: checked ? color : '#C9C4B6',
+        backgroundColor: checked ? color : 'transparent',
+      }}
+    >
+      {checked && <IconCheck size={14} color="#fff" />}
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------ */
+/* calendar                                                       */
+/* ------------------------------------------------------------ */
+
+function CalendarGrid({ plan, completions, viewMonth, selectedDate, onSelect }) {
+  const year = viewMonth.getFullYear();
+  const month = viewMonth.getMonth();
+  const firstOfMonth = new Date(year, month, 1);
+  const startOffset = firstOfMonth.getDay();
+  const gridStart = addDays(firstOfMonth, -startOffset);
+  const todayStr = toISO(new Date());
+
+  const cells = [];
+  for (let i = 0; i < 42; i++) {
+    const d = addDays(gridStart, i);
+    const dateStr = toISO(d);
+    const inMonth = d.getMonth() === month;
+    const dayInfo = getDayInfo(dateStr, plan);
+    const doneMap = completions[dateStr] || {};
+    const total = dayInfo.exercises.length;
+    const done = dayInfo.exercises.filter((e) => doneMap[e.id]).length;
+    cells.push({ d, dateStr, inMonth, dayInfo, total, done });
+  }
+
+  return (
+    <div className="rc-cal-grid">
+      {WEEKDAY_SHORT.map((w, i) => (
+        <div key={i} className="rc-cal-weekday font-mono">{w}</div>
+      ))}
+      {cells.map(({ d, dateStr, inMonth, dayInfo, total, done }) => {
+        const isToday = dateStr === todayStr;
+        const isSelected = dateStr === selectedDate;
+        const hasTint = dayInfo.type === 'cycle' || dayInfo.type === 'weekly-rest';
+        const isRestLike = total === 0 && hasTint;
+        return (
+          <button
+            key={dateStr}
+            onClick={() => onSelect(dateStr)}
+            className="rc-cal-cell"
+            style={{
+              opacity: inMonth ? 1 : 0.35,
+              backgroundColor: hasTint ? hexToRgba(dayInfo.color, isSelected ? 0.30 : 0.14) : (isSelected ? 'var(--paper)' : 'transparent'),
+              boxShadow: isToday ? 'inset 0 0 0 1.5px #2C5AA0' : 'none',
+            }}
+          >
+            <span className="rc-cal-date font-mono">{d.getDate()}</span>
+            {total > 0 && <span className="rc-cal-dot" style={{ backgroundColor: dayInfo.color }} />}
+            {total > 0 && done === total && (
+              <IconCheck size={11} color="#2E8B57" className="rc-cal-check" />
+            )}
+            {total > 0 && done > 0 && done < total && <span className="rc-cal-partial" />}
+            <span className="rc-cal-label font-mono">
+              {total > 0 ? dayInfo.name.slice(0, 3).toUpperCase() : (isRestLike ? 'RST' : '')}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CycleLegend({ cycle }) {
+  if (cycle.length === 0) return null;
+  return (
+    <div className="rc-legend">
+      {cycle.map((day, i) => (
+        <span key={day.id} className="rc-legend-item font-mono">
+          <span className="rc-legend-dot" style={{ backgroundColor: dayColor(day, i) }} />
+          {day.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ */
+/* day panel                                                      */
+/* ------------------------------------------------------------ */
+
+function DayPanel({ dateStr, plan, completions, onToggle }) {
+  const dayInfo = getDayInfo(dateStr, plan);
+  const doneMap = completions[dateStr] || {};
+  const total = dayInfo.exercises.length;
+  const done = dayInfo.exercises.filter((e) => doneMap[e.id]).length;
+
+  return (
+    <div className="rc-panel">
+      <div className="rc-panel-accent" style={{ backgroundColor: dayInfo.color }} />
+      <div className="rc-panel-header" style={{ backgroundColor: hexToRgba(dayInfo.color, 0.08) }}>
+        <div>
+          <div className="font-mono rc-eyebrow">{formatLongDate(dateStr)}</div>
+          <div className="font-display rc-panel-title" style={{ color: dayInfo.color }}>
+            {dayInfo.name}
+          </div>
+        </div>
+        {total > 0 && <div className="font-mono rc-progress-chip">{done}/{total}</div>}
+      </div>
+
+      <div className="rc-panel-body">
+        {dayInfo.type === 'before-start' && (
+          <p className="rc-empty-note">
+            Your cycle hasn't started yet — it begins on {formatLongDate(plan.startDate)}.
+          </p>
+        )}
+        {dayInfo.type === 'weekly-rest' && (
+          <p className="rc-empty-note">Recovery day. Nothing scheduled — go stretch.</p>
+        )}
+        {dayInfo.type === 'cycle' && total === 0 && (
+          <p className="rc-empty-note">Recovery day. Nothing scheduled — go stretch.</p>
+        )}
+        {dayInfo.type === 'empty' && (
+          <p className="rc-empty-note">Add a day in the Plan tab to build your cycle.</p>
+        )}
+
+        {total > 0 && (
+          <div className="rc-exercise-list" style={{ '--accent': dayInfo.color }}>
+            {dayInfo.exercises.map((ex) => {
+              const checked = !!doneMap[ex.id];
+              return (
+                <div key={ex.id} className="rc-exercise-row">
+                  <Checkbox checked={checked} color={dayInfo.color} onClick={() => onToggle(dateStr, ex.id)} />
+                  <div className="rc-exercise-text" style={{ opacity: checked ? 0.45 : 1 }}>
+                    <span
+                      className="rc-exercise-name"
+                      style={{ textDecoration: checked ? 'line-through' : 'none' }}
+                    >
+                      {ex.name || 'Untitled exercise'}
+                    </span>
+                    <span className="font-mono rc-exercise-meta">
+                      {ex.sets ? `${ex.sets} × ${ex.reps || '-'}` : (ex.reps || '')}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ */
+/* plan editor                                                    */
+/* ------------------------------------------------------------ */
+
+function PlanEditor({ plan, onChange }) {
+  const [confirmDeleteDay, setConfirmDeleteDay] = useState(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  function update(mutator) {
+    const next = cloneDeep(plan);
+    mutator(next);
+    onChange(next);
+  }
+
+  function updateStartDate(v) {
+    update((p) => { p.startDate = v; });
+  }
+  function toggleRestWeekday(wd) {
+    update((p) => {
+      const i = p.restWeekdays.indexOf(wd);
+      if (i === -1) p.restWeekdays.push(wd);
+      else p.restWeekdays.splice(i, 1);
+    });
+  }
+  function updateDayName(dayId, name) {
+    update((p) => {
+      const day = p.cycle.find((d) => d.id === dayId);
+      if (day) day.name = name;
+    });
+  }
+  function addDay() {
+    update((p) => { p.cycle.push({ id: uid(), name: `Day ${p.cycle.length + 1}`, exercises: [] }); });
+  }
+  function removeDay(dayId) {
+    update((p) => { p.cycle = p.cycle.filter((d) => d.id !== dayId); });
+    setConfirmDeleteDay(null);
+  }
+  function moveDay(index, dir) {
+    update((p) => {
+      const j = index + dir;
+      if (j < 0 || j >= p.cycle.length) return;
+      const tmp = p.cycle[index];
+      p.cycle[index] = p.cycle[j];
+      p.cycle[j] = tmp;
+    });
+  }
+  function addExercise(dayId) {
+    update((p) => {
+      const day = p.cycle.find((d) => d.id === dayId);
+      if (day) day.exercises.push({ id: uid(), name: '', sets: 3, reps: '' });
+    });
+  }
+  function updateExercise(dayId, exId, field, value) {
+    update((p) => {
+      const day = p.cycle.find((d) => d.id === dayId);
+      const ex = day && day.exercises.find((e) => e.id === exId);
+      if (ex) ex[field] = field === 'sets' ? Number(value) || 0 : value;
+    });
+  }
+  function removeExercise(dayId, exId) {
+    update((p) => {
+      const day = p.cycle.find((d) => d.id === dayId);
+      if (day) day.exercises = day.exercises.filter((e) => e.id !== exId);
+    });
+  }
+  function resetToExample() {
+    onChange(defaultPlan());
+    setConfirmReset(false);
+  }
+
+  return (
+    <div className="rc-editor">
+      <section className="rc-editor-section">
+        <h3 className="font-display rc-section-title">Cycle start</h3>
+        <span className="rc-section-hint">The date your Day 1 lands on. Everything else repeats from here.</span>
+        <input
+          type="date"
+          value={plan.startDate}
+          onChange={(e) => updateStartDate(e.target.value)}
+          className="rc-date-input font-mono"
+        />
+      </section>
+
+      <section className="rc-editor-section">
+        <h3 className="font-display rc-section-title">Always-rest weekdays</h3>
+        <span className="rc-section-hint">Optional — pick days the cycle should always pause on, regardless of position.</span>
+        <div className="rc-weekday-row">
+          {WEEKDAY_SHORT.map((w, i) => {
+            const active = plan.restWeekdays.includes(i);
+            return (
+              <button
+                key={i}
+                onClick={() => toggleRestWeekday(i)}
+                className="font-mono rc-weekday-btn"
+                style={{
+                  backgroundColor: active ? '#C75B29' : 'transparent',
+                  color: active ? '#fff' : '#6B7280',
+                  borderColor: active ? '#C75B29' : '#DEDACD',
+                }}
+              >
+                {w}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="rc-editor-section">
+        <h3 className="font-display rc-section-title">Your {plan.cycle.length}-day cycle</h3>
+        <span className="rc-section-hint">Repeats in this order, forever, starting from the date above.</span>
+
+        <div className="rc-day-list">
+          {plan.cycle.map((day, index) => {
+            const accent = dayColor(day, index);
+            return (
+              <div key={day.id} className="rc-day-card" style={{ '--accent': accent }}>
+                <div className="rc-day-card-header">
+                  <span className="font-mono rc-day-chip" style={{ backgroundColor: accent }}>
+                    D{index + 1}
+                  </span>
+                  <input
+                    value={day.name}
+                    onChange={(e) => updateDayName(day.id, e.target.value)}
+                    className="font-display rc-day-name-input"
+                    placeholder="Day name"
+                  />
+                  <div className="rc-day-controls">
+                    <button onClick={() => moveDay(index, -1)} disabled={index === 0} className="rc-icon-btn">↑</button>
+                    <button onClick={() => moveDay(index, 1)} disabled={index === plan.cycle.length - 1} className="rc-icon-btn">↓</button>
+                    {confirmDeleteDay === day.id ? (
+                      <button onClick={() => removeDay(day.id)} className="rc-confirm-btn font-mono">Delete?</button>
+                    ) : (
+                      <button onClick={() => setConfirmDeleteDay(day.id)} className="rc-icon-btn">✕</button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rc-ex-edit-list">
+                  {day.exercises.map((ex) => (
+                    <div key={ex.id} className="rc-ex-edit-row">
+                      <input
+                        value={ex.name}
+                        onChange={(e) => updateExercise(day.id, ex.id, 'name', e.target.value)}
+                        placeholder="Exercise name"
+                        className="rc-ex-name-input"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        value={ex.sets}
+                        onChange={(e) => updateExercise(day.id, ex.id, 'sets', e.target.value)}
+                        className="rc-ex-sets-input font-mono"
+                      />
+                      <span className="rc-x">×</span>
+                      <input
+                        value={ex.reps}
+                        onChange={(e) => updateExercise(day.id, ex.id, 'reps', e.target.value)}
+                        placeholder="reps"
+                        className="rc-ex-reps-input font-mono"
+                      />
+                      <button onClick={() => removeExercise(day.id, ex.id)} className="rc-icon-btn">✕</button>
+                    </div>
+                  ))}
+                  <button onClick={() => addExercise(day.id)} className="rc-add-ex-btn font-mono">+ Add exercise</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <button onClick={addDay} className="rc-add-day-btn font-display">+ Add day to cycle</button>
+      </section>
+
+      <section className="rc-editor-section rc-danger-zone">
+        {confirmReset ? (
+          <div className="rc-reset-confirm">
+            <span className="rc-section-hint">
+              This replaces your current plan with the example plan. Completion history stays.
+            </span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={resetToExample} className="rc-confirm-btn font-mono">Confirm reset</button>
+              <button onClick={() => setConfirmReset(false)} className="rc-text-btn font-mono">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmReset(true)} className="rc-text-btn font-mono">
+            Reset to example plan
+          </button>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ */
+/* styles                                                         */
+/* ------------------------------------------------------------ */
+
+const STYLES = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --paper: #F6F5F0;
+  --card: #FFFFFF;
+  --ink: #1B2431;
+  --graphite: #6B7280;
+  --hairline: #E4E0D4;
+  --blueprint: #2C5AA0;
+  --signal: #2E8B57;
+  --flag: #C75B29;
+  --header-dark: #0B2A4A;
+  --header-light: #3E6FB8;
+  --header-text: #EAF1FB;
+}
+
+.font-display { font-family: 'Space Grotesk', sans-serif; }
+.font-mono { font-family: 'IBM Plex Mono', monospace; }
+
+button, input { font-family: inherit; }
+
+.rc-root {
+  font-family: 'Inter', sans-serif;
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--hairline) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hairline) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--ink);
+  min-height: 100vh;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.rc-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -20px rgba(11,42,74,0.35), 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.rc-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--graphite);
+  min-height: 60vh;
+}
+.rc-spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 3px solid var(--hairline); border-top-color: var(--blueprint);
+  animation: rc-spin 0.8s linear infinite;
+}
+@keyframes rc-spin { to { transform: rotate(360deg); } }
+
+.rc-header {
+  padding: 22px 22px 0;
+  transition: background-color 0.28s ease;
+}
+.rc-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+.rc-header-left { display: flex; align-items: center; gap: 9px; }
+.rc-header-icon-badge {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: rgba(255,255,255,0.16);
+  display: flex; align-items: center; justify-content: center;
+}
+.rc-wordmark { font-size: 21px; font-weight: 700; letter-spacing: 0.09em; color: var(--header-text); }
+.rc-header-right { display: flex; align-items: center; gap: 10px; }
+.rc-stat-chip {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,0.14);
+  color: var(--header-text);
+  padding: 7px 13px;
+  border-radius: 20px;
+  font-size: 12px;
+}
+.rc-ring-chip {
+  background: rgba(255,255,255,0.14);
+  border-radius: 50%;
+  padding: 3px;
+  display: flex;
+}
+
+.rc-folder-tabs { display: flex; gap: 4px; padding: 0 6px; }
+.rc-folder-tab {
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 10px 22px;
+  border-radius: 10px 10px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: all 0.18s ease;
+  position: relative;
+}
+.rc-folder-tab-active {
+  background: var(--card);
+  color: var(--ink);
+  transform: translateY(1px);
+  z-index: 2;
+}
+.rc-folder-tab-inactive {
+  background: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.82);
+  transform: translateY(5px);
+  z-index: 1;
+}
+.rc-folder-tab-inactive:hover { background: rgba(255,255,255,0.2); }
+
+.rc-shell-content { background: var(--card); padding: 24px 22px 28px; }
+
+.rc-save-error {
+  background: #FDECEA; color: #A33A2C; border: 1px solid #F0C6BE;
+  padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 14px;
+}
+
+.rc-calendar-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+@media (min-width: 900px) {
+  .rc-calendar-layout { grid-template-columns: 1fr 320px; align-items: start; }
+}
+
+.rc-month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.rc-month-label { font-size: 16px; font-weight: 600; min-width: 160px; }
+
+.rc-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px;
+  border: 1px solid var(--hairline); background: var(--card);
+  color: var(--ink); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.rc-icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.rc-text-btn {
+  border: none; background: transparent; color: var(--blueprint);
+  font-size: 12px; cursor: pointer; padding: 4px 8px;
+}
+
+.rc-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 10px;
+}
+.rc-cal-weekday { text-align: center; font-size: 11px; color: var(--graphite); padding-bottom: 4px; }
+.rc-cal-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  transition: background-color 0.15s ease;
+}
+.rc-cal-date { font-size: 12px; font-weight: 500; }
+.rc-cal-dot { width: 5px; height: 5px; border-radius: 50%; }
+.rc-cal-label { font-size: 8px; color: var(--graphite); letter-spacing: 0.03em; font-weight: 600; }
+.rc-cal-check { position: absolute; top: 4px; right: 4px; }
+.rc-cal-partial { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: #D9A441; }
+
+.rc-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; padding: 0 2px; }
+.rc-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--graphite); }
+.rc-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.rc-panel {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.rc-panel-accent { height: 4px; }
+.rc-panel-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 16px 18px; border-bottom: 1px solid var(--hairline);
+}
+.rc-panel-body { padding: 16px 18px; }
+.rc-eyebrow { font-size: 11px; color: var(--graphite); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
+.rc-panel-title { font-size: 20px; font-weight: 700; }
+.rc-progress-chip { font-size: 12px; color: var(--graphite); background: var(--paper); padding: 3px 8px; border-radius: 20px; }
+.rc-empty-note { color: var(--graphite); font-size: 14px; line-height: 1.5; margin: 0; }
+
+.rc-exercise-list { display: flex; flex-direction: column; gap: 8px; }
+.rc-exercise-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--accent, var(--hairline));
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.rc-check {
+  width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0; transition: transform 0.12s ease;
+}
+.rc-check:active { transform: scale(0.9); }
+.rc-exercise-text { display: flex; flex-direction: column; flex: 1; }
+.rc-exercise-name { font-size: 14px; font-weight: 500; }
+.rc-exercise-meta { font-size: 11px; color: var(--graphite); }
+
+.rc-pulse { animation: rc-pulse-anim 2.2s ease-in-out infinite; transform-origin: center; }
+@keyframes rc-pulse-anim { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.rc-editor { display: flex; flex-direction: column; gap: 22px; max-width: 680px; }
+.rc-section-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.rc-section-hint { font-size: 12px; color: var(--graphite); margin-bottom: 10px; display: block; }
+.rc-date-input, .rc-day-name-input, .rc-ex-name-input, .rc-ex-sets-input, .rc-ex-reps-input {
+  border: 1px solid var(--hairline); border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  background: var(--card); color: var(--ink);
+}
+.rc-date-input { width: 160px; }
+
+.rc-weekday-row { display: flex; gap: 6px; }
+.rc-weekday-btn {
+  width: 30px; height: 30px; border-radius: 6px; border: 1px solid; font-size: 12px; cursor: pointer;
+}
+
+.rc-day-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.rc-day-card {
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--accent, var(--hairline));
+  border-radius: 10px; padding: 12px; background: var(--card);
+}
+.rc-day-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.rc-day-chip { color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 5px; flex-shrink: 0; }
+.rc-day-name-input { flex: 1; font-size: 14px; font-weight: 600; border: none; background: transparent; padding: 4px 2px; }
+.rc-day-controls { display: flex; gap: 4px; }
+.rc-confirm-btn {
+  background: var(--flag); color: #fff; border: none; border-radius: 6px;
+  padding: 4px 8px; font-size: 11px; cursor: pointer;
+}
+
+.rc-ex-edit-list { display: flex; flex-direction: column; gap: 6px; padding-left: 4px; }
+.rc-ex-edit-row { display: flex; align-items: center; gap: 6px; }
+.rc-ex-name-input { flex: 1; }
+.rc-ex-sets-input { width: 42px; text-align: center; }
+.rc-x { color: var(--graphite); font-size: 12px; }
+.rc-ex-reps-input { width: 70px; }
+
+.rc-add-ex-btn, .rc-add-day-btn {
+  display: flex; align-items: center; gap: 5px;
+  border: 1px dashed var(--hairline); background: transparent;
+  color: var(--blueprint); font-size: 12px; padding: 6px 10px; border-radius: 6px;
+  cursor: pointer; margin-top: 4px; width: fit-content;
+}
+.rc-add-day-btn { font-size: 13px; padding: 8px 14px; margin-top: 4px; }
+
+.rc-danger-zone { border-top: 1px solid var(--hairline); padding-top: 14px; }
+.rc-reset-confirm { display: flex; flex-direction: column; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-pulse, .rc-spinner { animation: none; }
+}
+`;
+
+/* ------------------------------------------------------------ */
+/* app                                                             */
+/* ------------------------------------------------------------ */
+
+function App() {
+  const [loading, setLoading] = useState(true);
+  const [plan, setPlan] = useState(null);
+  const [completions, setCompletions] = useState({});
+  const [tab, setTab] = useState('cycle');
+  const [viewMonth, setViewMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [selectedDate, setSelectedDate] = useState(() => toISO(new Date()));
+  const [saveError, setSaveError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let loadedPlan = null;
+      let loadedCompletions = null;
+      try {
+        const r = await window.storage.get(PLAN_KEY);
+        if (r && r.value) loadedPlan = JSON.parse(r.value);
+      } catch (e) { /* no saved plan yet */ }
+      try {
+        const r2 = await window.storage.get(COMPLETIONS_KEY);
+        if (r2 && r2.value) loadedCompletions = JSON.parse(r2.value);
+      } catch (e) { /* no saved completions yet */ }
+      if (!cancelled) {
+        setPlan(loadedPlan || defaultPlan());
+        setCompletions(loadedCompletions || {});
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const persistPlan = useCallback(async (next) => {
+    setPlan(next);
+    try {
+      await window.storage.set(PLAN_KEY, JSON.stringify(next));
+    } catch (e) {
+      setSaveError(true);
+    }
+  }, []);
+
+  const toggleExercise = useCallback((dateStr, exId) => {
+    setCompletions((prev) => {
+      const dayMap = { ...(prev[dateStr] || {}) };
+      if (dayMap[exId]) delete dayMap[exId];
+      else dayMap[exId] = true;
+      const next = { ...prev, [dateStr]: dayMap };
+      window.storage.set(COMPLETIONS_KEY, JSON.stringify(next)).catch(() => setSaveError(true));
+      return next;
+    });
+  }, []);
+
+  const todayInfo = useMemo(
+    () => (plan ? getCycleInfo(toISO(new Date()), plan) : { type: 'empty' }),
+    [plan],
+  );
+  const streak = useMemo(() => (plan ? computeStreak(plan, completions) : 0), [plan, completions]);
+  const week = useMemo(
+    () => (plan ? computeWeekProgress(plan, completions) : { done: 0, total: 0 }),
+    [plan, completions],
+  );
+
+  if (loading || !plan) {
+    return (
+      <div className="rc-root rc-loading">
+        <style>{STYLES}</style>
+        <div className="rc-spinner" />
+        <span className="font-mono">Loading your cycle…</span>
+      </div>
+    );
+  }
+
+  const headerColor = tab === 'plan' ? 'var(--header-light)' : 'var(--header-dark)';
+
+  return (
+    <div className="rc-root">
+      <style>{STYLES}</style>
+
+      <div className="rc-shell">
+        <header className="rc-header" style={{ backgroundColor: headerColor }}>
+          <div className="rc-header-top">
+            <div className="rc-header-left">
+              <span className="rc-header-icon-badge">
+                <IconDumbbell size={17} color="#fff" />
+              </span>
+              <span className="font-display rc-wordmark">MY GYM</span>
+            </div>
+            <div className="rc-header-right">
+              <span className="rc-stat-chip">
+                🔥 <span className="font-mono">{streak}</span>
+              </span>
+              <span className="rc-stat-chip font-mono">{week.done}/{week.total} this week</span>
+              <span className="rc-ring-chip">
+                <CycleRing cycle={plan.cycle} activeIndex={todayInfo.type === 'cycle' ? todayInfo.index : -1} />
+              </span>
+            </div>
+          </div>
+
+          <nav className="rc-folder-tabs">
+            <button
+              className={`font-display rc-folder-tab ${tab === 'plan' ? 'rc-folder-tab-active' : 'rc-folder-tab-inactive'}`}
+              onClick={() => setTab('plan')}
+            >
+              Plan
+            </button>
+            <button
+              className={`font-display rc-folder-tab ${tab === 'cycle' ? 'rc-folder-tab-active' : 'rc-folder-tab-inactive'}`}
+              onClick={() => setTab('cycle')}
+            >
+              Cycle
+            </button>
+          </nav>
+        </header>
+
+        <div className="rc-shell-content">
+          {saveError && (
+            <div className="rc-save-error font-mono">Couldn't save your last change — check your device storage.</div>
+          )}
+
+          {tab === 'cycle' && (
+            <div className="rc-calendar-layout">
+              <div className="rc-calendar-col">
+                <div className="rc-month-nav">
+                  <button
+                    className="rc-icon-btn"
+                    onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1))}
+                  >‹</button>
+                  <span className="font-display rc-month-label">
+                    {MONTH_NAMES[viewMonth.getMonth()]} {viewMonth.getFullYear()}
+                  </span>
+                  <button
+                    className="rc-icon-btn"
+                    onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1))}
+                  >›</button>
+                  <button
+                    className="rc-text-btn font-mono"
+                    onClick={() => {
+                      const d = new Date();
+                      setViewMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+                      setSelectedDate(toISO(d));
+                    }}
+                  >
+                    Today
+                  </button>
+                </div>
+                <CalendarGrid
+                  plan={plan}
+                  completions={completions}
+                  viewMonth={viewMonth}
+                  selectedDate={selectedDate}
+                  onSelect={setSelectedDate}
+                />
+                <CycleLegend cycle={plan.cycle} />
+              </div>
+              <div className="rc-panel-col">
+                <DayPanel dateStr={selectedDate} plan={plan} completions={completions} onToggle={toggleExercise} />
+              </div>
+            </div>
+          )}
+
+          {tab === 'plan' && <PlanEditor plan={plan} onChange={persistPlan} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+  (function () {
+    const code = document.getElementById('app-source').textContent;
+    const result = Babel.transform(code, {
+      presets: [['react', { runtime: 'classic' }]],
+    });
+    const script = document.createElement('script');
+    script.text = result.code;
+    document.body.appendChild(script);
+  })();
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
