@@ -655,6 +655,8 @@ const STYLES = `
 .font-display { font-family: 'Space Grotesk', sans-serif; }
 .font-mono { font-family: 'IBM Plex Mono', monospace; }
 
+*, *::before, *::after { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
 button, input { font-family: inherit; }
 
 .rc-root {
@@ -765,15 +767,17 @@ button, input { font-family: inherit; }
 
 .rc-calendar-layout {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  min-width: 0;
 }
 @media (min-width: 900px) {
-  .rc-calendar-layout { grid-template-columns: 1fr 320px; align-items: start; }
+  .rc-calendar-layout { grid-template-columns: minmax(0, 1fr) 320px; align-items: start; }
 }
+.rc-calendar-col, .rc-panel-col { min-width: 0; }
 
-.rc-month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.rc-month-label { font-size: 16px; font-weight: 600; min-width: 160px; }
+.rc-month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.rc-month-label { font-size: 16px; font-weight: 600; }
 
 .rc-icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -789,8 +793,9 @@ button, input { font-family: inherit; }
 
 .rc-cal-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
+  min-width: 0;
   background: var(--paper);
   border: 1px solid var(--hairline);
   border-radius: 12px;
@@ -800,12 +805,13 @@ button, input { font-family: inherit; }
 .rc-cal-cell {
   position: relative;
   aspect-ratio: 1;
+  min-width: 0;
   border: none;
   border-radius: 8px;
   cursor: pointer;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px;
-  min-height: 52px;
+  min-height: 40px;
   transition: background-color 0.15s ease;
 }
 .rc-cal-date { font-size: 12px; font-weight: 500; }
@@ -879,7 +885,7 @@ button, input { font-family: inherit; }
 }
 .rc-day-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .rc-day-chip { color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 5px; flex-shrink: 0; }
-.rc-day-name-input { flex: 1; font-size: 14px; font-weight: 600; border: none; background: transparent; padding: 4px 2px; }
+.rc-day-name-input { flex: 1; min-width: 60px; font-size: 14px; font-weight: 600; border: none; background: transparent; padding: 4px 2px; }
 .rc-day-controls { display: flex; gap: 4px; }
 .rc-confirm-btn {
   background: var(--flag); color: #fff; border: none; border-radius: 6px;
@@ -887,8 +893,8 @@ button, input { font-family: inherit; }
 }
 
 .rc-ex-edit-list { display: flex; flex-direction: column; gap: 6px; padding-left: 4px; }
-.rc-ex-edit-row { display: flex; align-items: center; gap: 6px; }
-.rc-ex-name-input { flex: 1; }
+.rc-ex-edit-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rc-ex-name-input { flex: 1; min-width: 90px; }
 .rc-ex-sets-input { width: 42px; text-align: center; }
 .rc-x { color: var(--graphite); font-size: 12px; }
 .rc-ex-reps-input { width: 70px; }
